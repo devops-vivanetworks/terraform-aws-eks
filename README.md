@@ -2,8 +2,6 @@
 
 Terraform module which creates AWS EKS (Kubernetes) resources
 
-[![SWUbanner](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg)](https://github.com/vshymanskyy/StandWithUkraine/blob/main/docs/README.md)
-
 ## [Documentation](https://github.com/terraform-aws-modules/terraform-aws-eks/blob/master/docs)
 
 - [Frequently Asked Questions](https://github.com/terraform-aws-modules/terraform-aws-eks/blob/master/docs/faq.md)
