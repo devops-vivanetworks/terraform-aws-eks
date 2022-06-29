@@ -15,7 +15,7 @@ provider "kubernetes" {
 }
 
 locals {
-  name            = "tvlk-tsi-dev-testing"
+  name            = "tvlk-eks-tsi-dev"
   cluster_version = "1.22"
   region          = "ap-southeast-1"
 
@@ -52,9 +52,9 @@ module "eks" {
   #create_cni_ipv6_iam_policy = true
 
   cluster_addons = {
-    #coredns = {
-    #  resolve_conflicts = "OVERWRITE"
-    #}
+    coredns = {
+      resolve_conflicts = "OVERWRITE"
+    }
     kube-proxy = {}
     vpc-cni = {
       resolve_conflicts        = "OVERWRITE"
@@ -67,9 +67,6 @@ module "eks" {
   }]
 
   cluster_tags = {
-    # This should not affect the name of the cluster primary security group
-    # Ref: https://github.com/terraform-aws-modules/terraform-aws-eks/pull/2006
-    # Ref: https://github.com/terraform-aws-modules/terraform-aws-eks/pull/2008
     Name = local.name
   }
 
@@ -112,7 +109,7 @@ module "eks" {
 
   eks_managed_node_group_defaults = {
     ami_type       = "AL2_x86_64"
-    instance_types = ["t3.nano", "t3.micro", "t3.large"]
+    instance_types = ["t3.small", "t3.medium"]
 
     # We are using the IRSA created below for permissions
     # However, we have to deploy with the policy attached FIRST (when creating a fresh cluster)
@@ -123,55 +120,25 @@ module "eks" {
   }
 
   eks_managed_node_groups = {
-    # Default node group - as provided by AWS EKS
-    default_node_group = {
-      # By default, the module creates a launch template to ensure tags are propagated to instances, etc.,
-      # so we need to disable it to use the default template provided by the AWS EKS managed node group service
-      create_launch_template = false
-      launch_template_name   = ""
-
-      disk_size = 50
-
-      # Remote access cannot be specified with a launch template
-      remote_access = {
-        ec2_ssh_key               = aws_key_pair.this.key_name
-        source_security_group_ids = [aws_security_group.remote_access.id]
-      }
-    }
-
-    # Use existing/external launch template
-    external_lt = {
-      create_launch_template  = false
-      launch_template_name    = aws_launch_template.external.name
-      launch_template_version = aws_launch_template.external.default_version
-    }
-
-    # Complete
+  
+    # Complete node group using spot instances
     complete = {
-      name            = "complete-eks-mng"
+      name            = "eks-spot-node"
       use_name_prefix = true
 
       subnet_ids = var.subnet_ids
 
       min_size     = 1
-      max_size     = 7
+      max_size     = 3
       desired_size = 1
 
       capacity_type        = "SPOT"
       force_update_version = true
-      instance_types       = ["t3.nano", "t3.micro", "t3.large"]
+      instance_types       = ["t3.small", "t3.medium"]
       labels = {
         GithubRepo = "tvlk-aws-eks"
         GithubOrg  = "traveloka"
       }
-
-      taints = [
-        {
-          key    = "dedicated"
-          value  = "gpuGroup"
-          effect = "NO_SCHEDULE"
-        }
-      ]
 
       update_config = {
         max_unavailable_percentage = 50 # or set `max_unavailable`
@@ -188,7 +155,7 @@ module "eks" {
         xvda = {
           device_name = "/dev/xvda"
           ebs = {
-            volume_size           = 75
+            volume_size           = 50
             volume_type           = "gp3"
             iops                  = 3000
             throughput            = 150
@@ -207,7 +174,7 @@ module "eks" {
       }
 
       create_iam_role          = true
-      iam_role_name            = "eks-managed-node-group-complete-example"
+      iam_role_name            = "eks-managed-node-group-eks-tsi"
       iam_role_use_name_prefix = false
       iam_role_description     = "EKS managed node group complete example role"
       iam_role_tags = {
@@ -218,7 +185,7 @@ module "eks" {
       ]
 
       create_security_group          = true
-      security_group_name            = "eks-managed-node-group-complete-example"
+      security_group_name            = "eks-managed-node-group-eks-tsi"
       security_group_use_name_prefix = false
       security_group_description     = "EKS managed node group complete example security group"
       security_group_rules = {
@@ -269,7 +236,7 @@ resource "aws_iam_role_policy_attachment" "additional" {
 ################################################################################
 
 resource "aws_security_group" "additional" {
-  name_prefix = "${local.name}-additional"
+  name_prefix = "${local.name}-eks-additional"
   vpc_id      = var.vpc_id
 
   ingress {
@@ -310,7 +277,7 @@ data "aws_iam_policy_document" "ebs" {
 
     principals {
       type        = "AWS"
-      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root","arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/SuperAdmin"]
     }
   }
 
@@ -364,7 +331,7 @@ data "aws_iam_policy_document" "ebs" {
 # then the default user-data for bootstrapping a cluster is merged in the copy.
 
 resource "aws_launch_template" "external" {
-  name_prefix            = "external-eks-ex-"
+  name_prefix            = "eks-template"
   description            = "EKS managed node group external launch template"
   update_default_version = true
 
@@ -372,8 +339,8 @@ resource "aws_launch_template" "external" {
     device_name = "/dev/xvda"
 
     ebs {
-      volume_size           = 100
-      volume_type           = "gp2"
+      volume_size           = 50
+      volume_type           = "gp3"
       delete_on_termination = true
     }
   }
@@ -391,7 +358,7 @@ resource "aws_launch_template" "external" {
     resource_type = "instance"
 
     tags = {
-      Name      = "external_lt"
+      Name      = "eks-testing-template"
       CustomTag = "Instance custom tag"
     }
   }
@@ -423,36 +390,6 @@ resource "aws_launch_template" "external" {
 
 resource "tls_private_key" "this" {
   algorithm = "RSA"
-}
-
-resource "aws_key_pair" "this" {
-  key_name_prefix = local.name
-  public_key      = tls_private_key.this.public_key_openssh
-
-  tags = local.tags
-}
-
-resource "aws_security_group" "remote_access" {
-  name_prefix = "${local.name}-remote-access"
-  description = "Allow remote SSH access"
-  vpc_id      = var.vpc_id
-
-  ingress {
-    description = "SSH access"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/8"]
-  }
-
-  egress {
-    from_port        = 0
-    to_port          = 0
-    protocol         = "-1"
-    cidr_blocks      = ["0.0.0.0/0"]
-  }
-
-  tags = local.tags
 }
 
 resource "aws_iam_policy" "node_additional" {
